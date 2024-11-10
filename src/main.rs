@@ -1,7 +1,7 @@
-
 use sqlx::postgres::PgPoolOptions;
 use std::env;
-
+use crate::cache::{set_key_value, get_value};
+use tokio;
 mod config;
 mod db;
 mod models;
@@ -9,6 +9,7 @@ mod cli;
 mod services;
 mod utils;
 mod node;
+mod cache;
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
@@ -30,7 +31,6 @@ async fn main() -> Result<(), sqlx::Error> {
         Ok(_) => println!("User created successfully!"),
         Err(e) => println!("Failed to create user: {}", e),
     }
-
     match test_query_user(&pool).await {
         Ok(_) => println!("User query executed successfully!"),
         Err(e) => println!("Failed to query user: {}", e),
@@ -43,15 +43,28 @@ async fn main() -> Result<(), sqlx::Error> {
 
 
 
+    // Redis test - setting key-value and get value
+    match set_key_value("test_key", "test_value").await {
+        Ok(_) => println!("Key-value set successfully in Redis."),
+        Err(err) => println!("Failed to set key-value in Redis: {}", err),
+    }
+    match get_value("test_key").await {
+        Ok(value) => println!("Value retrieved from Redis: {}", value),
+        Err(err) => println!("Failed to get value from Redis: {}", err),
+    }
+
+
     Ok(())
 }
 
 
-// methods for testing database
-async fn test_create_user(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    db::users::create_user(pool, "test1", "password", "111@ee.com").await
-}
 
+
+
+// testing database
+async fn test_create_user(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    db::users::create_user(pool, "test2", "password", "11@ee.com").await
+}
 
 async fn test_query_user(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     let rows = sqlx::query!(
