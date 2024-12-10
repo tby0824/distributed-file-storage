@@ -3,12 +3,11 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct User {
-    pub user_id: Uuid,
-    pub username: String,
-    pub password: String,
-    pub email: Option<String>,
-    pub role: Option<String>,
+pub struct File {
+    pub file_id: Uuid,
+    pub owner_id: Option<Uuid>,
+    pub file_name: String,
+    pub file_size: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
