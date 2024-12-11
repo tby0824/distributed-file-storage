@@ -1,13 +1,10 @@
-use sqlx::{Pool, Postgres};
+use sqlx::Pool;
+use sqlx::Postgres;
+use anyhow::Result;
 
-pub mod users;
-pub mod files;
-pub mod file_chunks;
-pub mod nodes;
-pub mod chunk_nodes;
-
-pub async fn init_db(database_url: &str) -> Result<Pool<Postgres>, sqlx::Error> {
-    let pool = Pool::<Postgres>::connect(database_url).await?;
-    // 可在此处执行数据库迁移
+pub async fn init_pool(db_url: &str) -> Result<Pool<Postgres>> {
+    let pool = Pool::<Postgres>::connect(db_url).await?;
     Ok(pool)
 }
+
+pub mod queries;

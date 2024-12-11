@@ -1,2 +1,1 @@
-pub mod node_discovery;
-pub mod communication;
+mod node_discovery;
