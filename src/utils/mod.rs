@@ -1,2 +1,2 @@
 pub mod config;
-pub(crate) mod cache;
+pub mod cache;

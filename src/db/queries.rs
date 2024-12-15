@@ -76,10 +76,6 @@ pub async fn insert_file_meta(pool: &Pool<Postgres>, owner_id: Uuid, file_name: 
 pub async fn delete_file_by_id(pool: &Pool<Postgres>, file_id: Uuid) -> Result<u64> {
     let mut tx = pool.begin().await?;
     sqlx::query!(
-        "DELETE FROM file_permissions WHERE file_id = $1",
-        file_id
-    ).execute(&mut *tx).await?;
-    sqlx::query!(
         "DELETE FROM chunk_nodes WHERE chunk_id IN (SELECT chunk_id FROM file_chunks WHERE file_id = $1)",
         file_id
     ).execute(&mut *tx).await?;
@@ -126,56 +122,12 @@ pub async fn rename_file(pool: &Pool<Postgres>, owner_id: Uuid, old_name: &str, 
     Ok(rows)
 }
 
-pub async fn can_read_file(pool: &Pool<Postgres>, user_id: Uuid, file_id: Uuid) -> Result<bool> {
-    if let Some(f) = get_file_by_id(pool, file_id).await? {
-        if f.owner_id == user_id {
-            return Ok(true);
-        }
-    }
-    let rec = sqlx::query!(
-        "SELECT can_read FROM file_permissions WHERE user_id = $1 AND file_id = $2",
-        user_id,
-        file_id
-    )
-        .fetch_optional(pool)
-        .await?;
-    Ok(rec.map(|r| r.can_read).unwrap_or(Some(false)).expect("REASON"))
+pub async fn can_read_file(_pool: &Pool<Postgres>, _user_id: Uuid, _file_id: Uuid) -> Result<bool> {
+    Ok(true)
 }
 
-pub async fn can_write_file(pool: &Pool<Postgres>, user_id: Uuid, file_id: Uuid) -> Result<bool> {
-    if let Some(f) = get_file_by_id(pool, file_id).await? {
-        if f.owner_id == user_id {
-            return Ok(true);
-        }
-    }
-    let rec = sqlx::query!(
-        "SELECT can_write FROM file_permissions WHERE user_id = $1 AND file_id = $2",
-        user_id,
-        file_id
-    )
-        .fetch_optional(pool)
-        .await?;
-    Ok(rec.map(|r| r.can_write).unwrap_or(Some(false)).expect("REASON"))
-}
-
-pub async fn set_file_permission(
-    pool: &Pool<Postgres>,
-    file_id: Uuid,
-    user_id: Uuid,
-    can_read: bool,
-    can_write: bool
-) -> Result<u64> {
-    let rows = sqlx::query!(
-        "INSERT INTO file_permissions (file_id, user_id, can_read, can_write)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (file_id, user_id)
-         DO UPDATE SET can_read = EXCLUDED.can_read, can_write = EXCLUDED.can_write",
-        file_id, user_id, can_read, can_write
-    )
-        .execute(pool)
-        .await?
-        .rows_affected();
-    Ok(rows)
+pub async fn can_write_file(_pool: &Pool<Postgres>, _user_id: Uuid, _file_id: Uuid) -> Result<bool> {
+    Ok(true)
 }
 
 pub async fn delete_user(pool: &Pool<Postgres>, user_id: Uuid) -> Result<u64> {

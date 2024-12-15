@@ -208,19 +208,3 @@ pub async fn handle_rename_file(pool: &Pool<Postgres>, user_id: Uuid, old_name: 
         Ok((false, format!("No file named '{}' or no permission.", old_name)))
     }
 }
-
-pub async fn handle_set_permission(pool: &Pool<Postgres>, user_id: Uuid, file_name: &str, target_username: &str, can_read: bool, can_write: bool) -> Result<(bool,String)> {
-    if let Some(file) = queries::get_file_by_name(pool, user_id, file_name).await? {
-        if !queries::can_write_file(pool, user_id, file.file_id).await? {
-            return Ok((false, "No permission to set ACL for this file.".to_string()));
-        }
-        let target_user = match queries::get_user_by_username(pool, target_username).await? {
-            Some(u) => u,
-            None => return Ok((false, format!("No such user '{}'", target_username))),
-        };
-        queries::set_file_permission(pool, file.file_id, target_user.user_id, can_read, can_write).await?;
-        Ok((true, format!("Permissions updated for user {}", target_username)))
-    } else {
-        Ok((false, format!("No such file '{}' or no permission.", file_name)))
-    }
-}

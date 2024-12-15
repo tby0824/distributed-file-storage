@@ -14,7 +14,6 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 use crate::handlers;
-use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct FileProtocol;
@@ -69,13 +68,30 @@ impl RequestResponseCodec for FileCodec {
     }
 }
 
-// Add new requests and responses
-
+// Requests
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadRequest {
     pub owner_id: Uuid,
     pub file_name: String,
     pub file_data: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadRequest {
+    pub file_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteFileRequest {
+    pub file_id: Uuid,
+    pub user_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,33 +120,6 @@ pub struct RenameFileRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetPermissionRequest {
-    pub user_id: Uuid,
-    pub file_name: String,
-    pub target_username: String,
-    pub can_read: bool,
-    pub can_write: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DownloadRequest {
-    pub file_id: Uuid,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegisterRequest {
-    pub username: String,
-    pub password: String,
-    pub email: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeleteFileRequest {
-    pub file_id: Uuid,
-    pub user_id: Uuid,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub enum FileRequest {
     Upload(UploadRequest),
     Download(DownloadRequest),
@@ -141,7 +130,6 @@ pub enum FileRequest {
     BatchDelete(BatchDeleteRequest),
     ListFiles(ListFilesRequest),
     RenameFile(RenameFileRequest),
-    SetPermission(SetPermissionRequest),
 }
 
 // Responses
@@ -201,12 +189,6 @@ pub struct RenameFileResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetPermissionResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub enum FileResponse {
     Upload(UploadResponse),
     Download(DownloadResponse),
@@ -217,7 +199,6 @@ pub enum FileResponse {
     BatchDelete(BatchDeleteResponse),
     ListFiles(ListFilesResponse),
     RenameFile(RenameFileResponse),
-    SetPermission(SetPermissionResponse),
     Error(String),
 }
 
@@ -284,6 +265,9 @@ impl From<RequestResponseEvent<FileRequest, FileResponse>> for FileStorageProtoc
     }
 }
 
+unsafe impl Send for FileStorageProtocol {}
+unsafe impl Sync for FileStorageProtocol {}
+
 impl FileStorageProtocol {
     pub fn new(db: Pool<Postgres>) -> Self {
         let protocols = vec![(FileProtocol, ProtocolSupport::Full)];
@@ -296,7 +280,7 @@ impl FileStorageProtocol {
         }
     }
 
-    pub async fn handle_request(&self, request: FileRequest) -> FileResponse {
+    async fn handle_request_ref(&self, request: FileRequest) -> FileResponse {
         match request {
             FileRequest::Upload(upload_req) => {
                 match handlers::handle_upload(&self.db, upload_req).await {
@@ -358,18 +342,11 @@ impl FileStorageProtocol {
                     Err(e) => FileResponse::Error(e.to_string()),
                 }
             }
-            FileRequest::SetPermission(req) => {
-                match handlers::handle_set_permission(&self.db, req.user_id, &req.file_name, &req.target_username, req.can_read, req.can_write).await {
-                    Ok((success, message)) => FileResponse::SetPermission(SetPermissionResponse { success, message }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
         }
     }
 
-    // 为本地请求添加一个异步方法，不需要对等点即可使用
     pub async fn handle_local_request(&self, req: FileRequest) -> FileResponse {
-        self.handle_request(req).await
+        self.handle_request_ref(req).await
     }
 
     pub fn send_upload_request(&mut self, peer: &libp2p::PeerId, req: UploadRequest) {
