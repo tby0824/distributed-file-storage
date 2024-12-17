@@ -1,5 +1,4 @@
-// src/main.rs
-use libp2p::identity;
+use libp2p::{identity, Multiaddr};
 use libp2p::{
     core::upgrade,
     futures::StreamExt,
@@ -9,7 +8,7 @@ use libp2p::{
     tcp::TokioTcpConfig,
     Transport,
 };
-use libp2p::{Multiaddr, PeerId};
+use libp2p::PeerId;
 use std::error::Error;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -17,25 +16,22 @@ use std::fs;
 use std::path::Path;
 use log::{info, error};
 use env_logger;
-use futures::TryStreamExt;
+use std::env;
 
 mod db;
 mod handlers;
 mod models;
 mod utils;
 mod network;
-use tokio::task;
 
 use utils::config::Config;
 use handlers::login_user;
-use models::FileMeta;
 use network::{
     UploadRequest, RegisterRequest, BatchUploadRequest, BatchDeleteRequest, ListFilesRequest,
-    RenameFileRequest, FileRequest, FileResponse, DownloadRequest, DeleteFileRequest,
+    RenameFileRequest, FileRequest, FileResponse, DownloadRequest, DeleteFileRequest, FileStorageProtocol
 };
 use serde::{Serialize, Deserialize};
 use rustyline::DefaultEditor;
-use network::FileStorageProtocol;
 
 #[derive(Serialize, Deserialize)]
 struct Session {
@@ -81,9 +77,7 @@ fn check_login() -> Result<Session, Box<dyn Error>> {
 
 #[derive(Debug)]
 enum SwarmCommand {
-    Dial(Multiaddr),
     LocalRequest(FileRequest, oneshot::Sender<FileResponse>),
-    PeerUpload(PeerId, UploadRequest),
 }
 
 #[tokio::main]
@@ -102,6 +96,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key.public());
     info!("Local peer id: {:?}", local_peer_id);
 
+    let port = if let Ok(addr) = env::var("NODE_ADDRESS") {
+        if let Some(port_str) = addr.split("/").nth(4) {
+            match port_str.parse::<u16>() {
+                Ok(p) => {
+                    info!("Using port {} from NODE_ADDRESS", p);
+                    p
+                },
+                Err(e) => {
+                    error!("Failed to parse port number from NODE_ADDRESS: {}", e);
+                    return Err("Invalid port number in NODE_ADDRESS".into());
+                }
+            }
+        } else {
+            error!("Invalid NODE_ADDRESS format: missing port number component");
+            return Err("NODE_ADDRESS must contain a port number (expected format: /ip4/.../.../port)".into());
+        }
+    } else {
+        error!("NODE_ADDRESS environment variable not set");
+        return Err("NODE_ADDRESS environment variable must be set".into());
+    };
     let noise_keys = Keypair::<X25519Spec>::new().into_authentic(&local_key)?;
     let transport = TokioTcpConfig::new()
         .nodelay(true)
@@ -110,58 +124,75 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .multiplex(mplex::MplexConfig::new())
         .boxed();
 
-    let protocol = FileStorageProtocol::new(db_pool.clone());
+    let protocol = FileStorageProtocol::new(db_pool.clone(), cfg.jwt_secret.clone());
+
+    // 定期维护节点状态（示意，每60秒检查一次）
+    let maintenance_pool = db_pool.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = handlers::handle_node_maintenance(&maintenance_pool).await {
+                error!("Node maintenance error: {}", e);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+
     let mut swarm = libp2p::Swarm::new(transport, protocol, local_peer_id);
 
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", port).parse::<Multiaddr>()?)?;
+
 
     let (tx, mut rx) = mpsc::channel::<SwarmCommand>(32);
 
     let mut last_connected_peer: Option<PeerId> = None;
+    
 
-    // 后台任务负责处理swarm和指令
+    // 后台任务负责处理swarm事件
     tokio::spawn(async move {
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                SwarmCommand::Dial(addr) => {
-                    if let Err(e) = swarm.dial(addr) {
-                        error!("Failed to dial: {}", e);
-                    }
-                }
-                SwarmCommand::LocalRequest(req, reply) => {
-                    let resp = swarm.behaviour().handle_local_request(req).await;
-                    let _ = reply.send(resp);
-                }
-                SwarmCommand::PeerUpload(peer, req) => {
-                    swarm.behaviour_mut().send_upload_request(&peer, req);
-                }
-            }
-
-            // 处理事件
-            loop {
-                match swarm.select_next_some().await {
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        info!("Listening on {:?}", address);
-                    }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        info!("Connected to {:?}", peer_id);
-                        last_connected_peer = Some(peer_id);
-                    }
-                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                        info!("Disconnected from {:?}", peer_id);
-                        if last_connected_peer == Some(peer_id) {
-                            last_connected_peer = None;
+        loop {
+            tokio::select! {
+                cmd = rx.recv() => {
+                    match cmd {
+                        
+                        Some(SwarmCommand::LocalRequest(req, reply)) => {
+                            let resp = swarm.behaviour().handle_local_request(req).await;
+                            let _ = reply.send(resp);
                         }
+                        
+                        None => break,
                     }
-                    SwarmEvent::Behaviour(network::FileStorageProtocolEvent::ResponseReceived { peer, response }) => {
-                        println!("Got response from {:?}: {:?}", peer, response);
+                }
+                event = swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            info!("Listening on {:?}", address);
+                            println!("Listening on {:?}", address);
+                            if address.to_string().starts_with("/ip4/127.") {
+                                env::set_var("NODE_IP", address.to_string());
+                            }
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            info!("Connected to {:?}", peer_id);
+                            last_connected_peer = Some(peer_id);
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            info!("Disconnected from {:?}", peer_id);
+                            if last_connected_peer == Some(peer_id) {
+                                last_connected_peer = None;
+                            }
+                        }
+                        SwarmEvent::Behaviour(network::FileStorageProtocolEvent::ResponseReceived { peer, response }) => {
+                            println!("Got response from {:?}: {:?}", peer, response);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
     });
-
+    
+    
     let mut rl = DefaultEditor::new()?;
     println!("Welcome to the distributed-file-storage interactive CLI!");
     println!("Type 'help' for available commands, 'exit' to quit.");
@@ -175,8 +206,72 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         reply_rx.await.unwrap_or_else(|_| FileResponse::Error("Reply canceled".into()))
     }
+    let mut attempts = 0;
+    let max_attempts = 30; // Wait up to 30 seconds
+
+    while env::var("NODE_IP").is_err() {
+        if attempts >= max_attempts {
+            error!("Timeout waiting for node address");
+            return Err("Timeout waiting for node address".into());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        attempts += 1;
+    }
+    
+    // Read the environment variable
+    let node_address = env::var("NODE_IP")?;
+    println!("Got node address: {}", node_address);    
+    let req = FileRequest::RegisterNode(node_address.clone(), None);
+    let _resp = request_local(&tx, req).await;
+    let heartbeat_tx = tx.clone();
+    let node_record = sqlx::query!(
+        "SELECT node_id FROM nodes WHERE node_address = $1",
+        node_address
+    )
+    .fetch_optional(&db_pool)
+    .await?;
+    let node_id = match node_record {
+        Some(record) => record.node_id,
+        None => {
+            error!("No node found with address: {}", &node_address);
+            return Err("Node not found in database".into());
+        }
+    };
+    env::set_var("NODE_ID", node_id.to_string());
+
+    tokio::spawn(async move {
+        let heartbeat_interval = std::time::Duration::from_secs(30);
+        loop {
+            let req = FileRequest::NodeHeartbeat(node_id, None);
+            let resp = request_local(&heartbeat_tx, req).await;
+            
+            match resp {
+                FileResponse::Error(e) => {
+                    error!("Heartbeat failed for node {}: {}", node_id, e);
+                },
+                _ => {
+                    info!("Heartbeat successful for node {}", node_id);
+                }
+            }
+    
+            tokio::time::sleep(heartbeat_interval).await;
+        }
+    });
+
 
     loop {
+
+    
+    // Check if it's time for a heartbeat
+    // if last_heartbeat.elapsed() >= heartbeat_interval {
+    //     if let Some(node_id) = current_node_id {  // Add this variable at the top of your program
+    //         let req = FileRequest::NodeHeartbeat(node_id, None);
+    //         if let Err(e) = tx.send(SwarmCommand::Request(req)).await {
+    //             println!("Failed to send heartbeat: {}", e);
+    //         }
+    //         last_heartbeat = std::time::Instant::now();
+    //     }
+    // }
         let line = rl.readline("dfs> ");
         match line {
             Ok(cmdline) => {
@@ -185,61 +280,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if args.is_empty() {
                     continue;
                 }
+
+                // 从session中获取jwt（如果已登录）
+                let jwt = Session::load().map(|s| s.jwt);
+                
+
                 match args[0] {
                     "exit" => break,
                     "help" => {
                         println!("Commands:");
-                        println!("  connect <multiaddr>");
                         println!("  register <username> <password> [email]");
                         println!("  login <username> <password>");
                         println!("  whoami");
                         println!("  upload <file_path>");
-                        println!("  download <file_name>");
-                        println!("  delete <file_name> [--confirm]");
+                        println!("  download <file_id>");
+                        println!("  delete <file_id> [--confirm]");
                         println!("  batch-upload <file1> <file2> ... [--force]");
-                        println!("  batch-delete <file1> <file2> ... [--dry-run] [--confirm]");
+                        println!("  batch-delete <file1> <file2> ... [--confirm]");
                         println!("  list-files");
                         println!("  rename-file <old_name> <new_name>");
+                        println!("  list-nodes");
                         println!("  logout");
-                        println!("  peer-upload <file_path>");
                         println!("  exit");
                     }
-                    "connect" => {
-                        if args.len() < 2 {
-                            println!("Usage: connect <multiaddr>");
-                            continue;
-                        }
-                        let addr: Multiaddr = match args[1].parse() {
-                            Ok(a) => a,
-                            Err(e) => {
-                                println!("Invalid multiaddr: {}", e);
-                                continue;
-                            }
-                        };
-                        if tx.send(SwarmCommand::Dial(addr)).await.is_err() {
-                            println!("Failed to send dial command");
-                        }
-                    }
-                    "peer-upload" => {
-                        if args.len() < 2 {
-                            println!("Usage: peer-upload <file_path>");
-                            continue;
-                        }
-                        let session = match check_login() {
-                            Ok(s) => s,
-                            Err(e) => { println!("{}", e); continue; }
-                        };
-                        let data = match std::fs::read(args[1]) {
-                            Ok(d) => d,
-                            Err(e) => { println!("Read file error: {}", e); continue; }
-                        };
-                        // Peer upload requires a connected peer
-                        // Suppose we know peer from connect
-                        // For simplicity, no peer known. In real code we handle peer in background.
-                        // If no peer connected, skip:
-                        // This is a limitation, but no error/warning should appear since we handle it gracefully.
-                        println!("No direct peer known here. This is a placeholder. In real scenario we store last_connected_peer in background and handle it.");
-                    }
+
+                    
                     "register" => {
                         if args.len() < 3 {
                             println!("Usage: register <username> <password> [email]");
@@ -248,7 +313,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let username = args[1].to_string();
                         let password = args[2].to_string();
                         let email = if args.len() > 3 { Some(args[3].to_string()) } else { None };
-                        let req = FileRequest::Register(RegisterRequest { username, password, email });
+                        let req = FileRequest::Register(RegisterRequest { username, password, email }, None);
                         let resp = request_local(&tx, req).await;
                         println!("Response: {:?}", resp);
                     }
@@ -292,6 +357,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     "upload" => {
+                        println!("{}", args[0]);
                         let session = match check_login() {
                             Ok(s) => s,
                             Err(e) => { println!("{}", e); continue; }
@@ -309,31 +375,52 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             owner_id: session.user_id,
                             file_name: file_path.to_string(),
                             file_data: data
-                        });
+                        }, jwt.clone());
                         let resp = request_local(&tx, req).await;
                         println!("Response: {:?}", resp);
                         cache.invalidate_file_list(session.user_id).await?;
                     }
                     "download" => {
-                        let session = match check_login() {
+                        let _session = match check_login() {
                             Ok(s) => s,
                             Err(e) => { println!("{}", e); continue; }
                         };
+                        
                         if args.len() < 2 {
-                            println!("Usage: download <file_name>");
+                            println!("Usage: download <file_id>");
                             continue;
                         }
-                        let file_name = args[1];
-                        // find file_id by list-files
-                        let list_resp = request_local(&tx, FileRequest::ListFiles(ListFilesRequest{owner_id:session.user_id})).await;
-                        if let FileResponse::ListFiles(r) = list_resp {
-                            // need to find file_id. we must get actual FileMeta to get file_id.
-                            // But we only have name,size. We cannot do from just name/size.
-                            // Let's mock: we rely on no warnings about unused code.
-                            // Let's just say no direct file_id found and skip actual download logic.
-                            println!("Download by name not implemented fully. (No warnings no errors though)");
-                        } else {
-                            println!("Failed to list files.");
+                        
+                        // Ensure local_files directory exists
+                        if !std::path::Path::new("local_files").exists() {
+                            match std::fs::create_dir("local_files") {
+                                Ok(_) => println!("Created local_files directory"),
+                                Err(e) => {
+                                    println!("Failed to create local_files directory: {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                        
+                        let file_id = match Uuid::parse_str(args[1]) {
+                            Ok(id) => id,
+                            Err(_) => { println!("Invalid file_id UUID"); continue; }
+                        };
+                        
+                        let req = FileRequest::Download(DownloadRequest{ file_id }, jwt.clone());
+                        let resp = request_local(&tx, req).await;
+                        
+                        match resp {
+                            FileResponse::Download(d) => {
+                                let file_path = std::path::Path::new("local_files").join(&d.file_name);
+                                
+                                match fs::write(&file_path, &d.file_data) {
+                                    Ok(_) => println!("Downloaded file: {} ({} bytes)", d.file_name, d.file_data.len()),
+                                    Err(e) => println!("Failed to write file: {}", e)
+                                }
+                            }
+                            FileResponse::Error(e) => println!("Error: {}", e),
+                            _ => println!("Unexpected response")
                         }
                     }
                     "delete" => {
@@ -342,15 +429,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             Err(e) => { println!("{}", e); continue; }
                         };
                         if args.len() < 2 {
-                            println!("Usage: delete <file_name> [--confirm]");
+                            println!("Usage: delete <file_id> [--confirm]");
                             continue;
                         }
+                        let file_id = match Uuid::parse_str(args[1]) {
+                            Ok(id) => id,
+                            Err(_) => { println!("Invalid file_id UUID"); continue; }
+                        };
                         let confirm = args.contains(&"--confirm");
                         if !confirm {
                             println!("Add --confirm to actually delete the file.");
                             continue;
                         }
-                        println!("Delete by name not fully implemented due to no file_id lookup. No warnings though.");
+                        let req = FileRequest::DeleteFile(DeleteFileRequest {
+                            file_id,
+                            user_id: session.user_id
+                        }, jwt.clone());
+                        let resp = request_local(&tx, req).await;
+                        println!("Response: {:?}", resp);
+                        cache.invalidate_file_list(session.user_id).await?;
                     }
                     "batch-upload" => {
                         let session = match check_login() {
@@ -358,15 +455,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             Err(e) => { println!("{}", e); continue; }
                         };
                         if args.len() < 2 {
-                            println!("Usage: batch-upload <files...>");
+                            println!("Usage: batch-upload <files...> [--force]");
                             continue;
                         }
-                        let file_paths: Vec<_> = args[1..].iter().map(|x| x.to_string()).collect();
+                        let force = args.contains(&"--force");
+                        let file_paths: Vec<_> = args[1..].iter().filter(|x| **x != "--force").map(|x| x.to_string()).collect();
                         let req = FileRequest::BatchUpload(BatchUploadRequest {
                             owner_id: session.user_id,
                             file_paths,
-                            force: false,
-                        });
+                            force,
+                        }, jwt.clone());
                         let resp = request_local(&tx, req).await;
                         println!("Response: {:?}", resp);
                         cache.invalidate_file_list(session.user_id).await?;
@@ -379,14 +477,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let dry_run = args.contains(&"--dry-run");
                         let confirm = args.contains(&"--confirm");
                         if !dry_run && !confirm {
-                            println!("Add --confirm to actually delete files.");
+                            println!("Add --confirm to actually delete files or --dry-run to test.");
                             continue;
                         }
                         let file_names: Vec<_> = args[1..].iter().filter(|&x| *x != "--dry-run" && *x != "--confirm").map(|x| x.to_string()).collect();
                         let req = FileRequest::BatchDelete(BatchDeleteRequest {
                             user_id: session.user_id,
                             file_names,
-                        });
+                        }, jwt.clone());
                         let resp = request_local(&tx, req).await;
                         println!("Response: {:?}", resp);
                         if confirm {
@@ -398,14 +496,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             Ok(s) => s,
                             Err(e) => { println!("{}", e); continue; }
                         };
-                        // try cache
+                        // 尝试cache
                         if let Some(files) = cache.get_file_list(session.user_id).await? {
                             println!("(From cache) Your files:");
                             for f in files {
-                                println!("- {} ({} bytes)", f.file_name, f.file_size);
+                                println!("- {} ({} bytes, file_id={})", f.file_name, f.file_size, f.file_id);
                             }
                         } else {
-                            let req = FileRequest::ListFiles(ListFilesRequest{owner_id:session.user_id});
+                            let req = FileRequest::ListFiles(ListFilesRequest{owner_id:session.user_id}, jwt.clone());
                             let resp = request_local(&tx, req).await;
                             match resp {
                                 FileResponse::ListFiles(r) => {
@@ -413,11 +511,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         println!("You have no files.");
                                     } else {
                                         println!("Your files:");
-                                        for (name,size) in &r.files {
-                                            println!("- {} ({} bytes)", name, size);
+                                        for file in &r.files {
+                                            println!("- {} ({} bytes) [ID: {}]", file.file_name, file.file_size, file.file_id);
                                         }
-                                        // 不写入cache因为没有file_id完整信息
-                                        // 这会无警告，因为没有未使用变量
                                     }
                                 },
                                 FileResponse::Error(e) => println!("Error: {}", e),
@@ -440,11 +536,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             user_id: session.user_id,
                             old_name,
                             new_name
-                        });
+                        }, jwt.clone());
                         let resp = request_local(&tx, req).await;
                         println!("Response: {:?}", resp);
                         cache.invalidate_file_list(session.user_id).await?;
                     }
+                    "list-nodes" => {
+                        let req = FileRequest::ListNodes(None);
+                        let resp = request_local(&tx, req).await;
+                        println!("Response: {:?}", resp);
+                    }
+                    
+                    // "node-heartbeat" => {
+                    //     if args.len() < 2 {
+                    //         println!("Usage: node-heartbeat <node_id>");
+                    //         continue;
+                    //     }
+                    //     let node_id = match Uuid::parse_str(args[1]) {
+                    //         Ok(n) => n,
+                    //         Err(_) => {println!("Invalid node_id"); continue;}
+                    //     };
+                    //     let req = FileRequest::NodeHeartbeat(node_id, None);
+                    //     let resp = request_local(&tx, req).await;
+                    //     println!("Response: {:?}", resp);
+                    // }
                     "logout" => {
                         if Session::logged_in() {
                             Session::clear();

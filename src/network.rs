@@ -7,13 +7,20 @@ use libp2p::{
     },
 };
 use futures::prelude::*;
+use log::{error, info};
 use sqlx::{Pool, Postgres};
 use std::time::Duration;
 use std::io;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
-use crate::handlers;
+use crate::handlers::{
+    handle_upload, handle_download, handle_list_nodes, handle_register,
+    handle_delete_file, handle_batch_upload, handle_batch_delete, handle_list_files,
+    handle_rename_file, handle_register_node, handle_node_heartbeat,
+    check_auth,
+};
+use anyhow::anyhow;
 
 #[derive(Debug, Clone)]
 pub struct FileProtocol;
@@ -33,6 +40,8 @@ impl RequestResponseCodec for FileCodec {
     type Request = FileRequest;
     type Response = FileResponse;
 
+
+    /// Reads a request from the network.
     async fn read_request<T>(&mut self, _: &FileProtocol, io: &mut T) -> io::Result<Self::Request>
     where T: AsyncRead + Unpin + Send {
         let mut buf = Vec::new();
@@ -49,6 +58,7 @@ impl RequestResponseCodec for FileCodec {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    /// Writes a request to the network.
     async fn write_request<T>(&mut self, _: &FileProtocol, io: &mut T, req: Self::Request) -> io::Result<()>
     where T: AsyncWrite + Unpin + Send {
         let buf = bincode::serialize(&req)
@@ -120,16 +130,45 @@ pub struct RenameFileRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadChunkRequest {
+    pub chunk_id: Uuid,
+}
+
+
+/// Enum representing different types of file requests.
+#[derive(Debug, Serialize, Deserialize)]
 pub enum FileRequest {
-    Upload(UploadRequest),
-    Download(DownloadRequest),
-    ListNodes,
-    Register(RegisterRequest),
-    DeleteFile(DeleteFileRequest),
-    BatchUpload(BatchUploadRequest),
-    BatchDelete(BatchDeleteRequest),
-    ListFiles(ListFilesRequest),
-    RenameFile(RenameFileRequest),
+    Upload(UploadRequest, Option<String>),
+    Download(DownloadRequest, Option<String>),
+    ListNodes(Option<String>),
+    Register(RegisterRequest, Option<String>),
+    DeleteFile(DeleteFileRequest, Option<String>),
+    BatchUpload(BatchUploadRequest, Option<String>),
+    BatchDelete(BatchDeleteRequest, Option<String>),
+    ListFiles(ListFilesRequest, Option<String>),
+    RenameFile(RenameFileRequest, Option<String>),
+    RegisterNode(String, Option<String>),
+    DownloadChunk(DownloadChunkRequest, Option<String>),
+    NodeHeartbeat(Uuid, Option<String>),
+}
+
+impl FileRequest {
+    pub fn jwt(&self) -> Option<&str> {
+        match self {
+            FileRequest::Upload(_, jwt)
+            | FileRequest::Download(_, jwt)
+            | FileRequest::ListNodes(jwt)
+            | FileRequest::Register(_, jwt)
+            | FileRequest::DeleteFile(_, jwt)
+            | FileRequest::BatchUpload(_, jwt)
+            | FileRequest::BatchDelete(_, jwt)
+            | FileRequest::ListFiles(_, jwt)
+            | FileRequest::RenameFile(_, jwt)
+            | FileRequest::RegisterNode(_, jwt)
+            | FileRequest::DownloadChunk(_, jwt)
+            | FileRequest::NodeHeartbeat(_, jwt) => jwt.as_deref(),
+        }
+    }
 }
 
 // Responses
@@ -179,7 +218,14 @@ pub struct BatchDeleteResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListFilesResponse {
-    pub files: Vec<(String,i64)>,
+    pub files: Vec<FileListItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileListItem {
+    pub file_id: Uuid,
+    pub file_name: String,
+    pub file_size: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -188,6 +234,18 @@ pub struct RenameFileResponse {
     pub message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterNodeResponse {
+    pub node_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadChunkResponse {
+    pub chunk_data: Vec<u8>,
+}
+
+
+/// Enum representing different types of file responses.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileResponse {
     Upload(UploadResponse),
@@ -199,23 +257,29 @@ pub enum FileResponse {
     BatchDelete(BatchDeleteResponse),
     ListFiles(ListFilesResponse),
     RenameFile(RenameFileResponse),
+    RegisterNode(RegisterNodeResponse),
+    DownloadChunk(DownloadChunkResponse),
+    NodeHeartbeatOk,
     Error(String),
 }
 
+
+/// Custom network behaviour integrating the request-response protocol.
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "FileStorageProtocolEvent")]
 pub struct FileStorageProtocol {
     request_response: RequestResponse<FileCodec>,
     #[behaviour(ignore)]
     pub(crate) db: Pool<Postgres>,
+    #[behaviour(ignore)]
+    pub(crate) jwt_secret: String,
 }
 
+
+
+/// Events emitted by the FileStorageProtocol behaviour.
 #[derive(Debug)]
 pub enum FileStorageProtocolEvent {
-    FileReceived {
-        file_id: Uuid,
-        from: libp2p::PeerId,
-    },
     RequestFailed {
         peer: libp2p::PeerId,
         error: String,
@@ -225,19 +289,33 @@ pub enum FileStorageProtocolEvent {
         response: FileResponse,
     },
 }
-
+impl FileStorageProtocolEvent {
+    #[allow(dead_code)]
+    fn debug_info(&self) {
+        match self {
+            FileStorageProtocolEvent::RequestFailed { peer, error } => {
+                let _ = (peer, error);
+            }
+            FileStorageProtocolEvent::ResponseReceived { peer, response: _ } => {
+                let _ = peer;
+            }
+        }
+    }
+}
 impl From<RequestResponseEvent<FileRequest, FileResponse>> for FileStorageProtocolEvent {
     fn from(event: RequestResponseEvent<FileRequest, FileResponse>) -> Self {
         match event {
             RequestResponseEvent::Message { peer, message } => {
                 match message {
                     RequestResponseMessage::Response { response, .. } => {
+                        info!("Received response from peer: {}", peer);
                         FileStorageProtocolEvent::ResponseReceived {
                             peer,
                             response,
                         }
                     }
                     RequestResponseMessage::Request { .. } => {
+                        error!("Unexpected request from peer: {}", peer);
                         FileStorageProtocolEvent::RequestFailed {
                             peer,
                             error: "Unexpected request".to_string(),
@@ -246,30 +324,38 @@ impl From<RequestResponseEvent<FileRequest, FileResponse>> for FileStorageProtoc
                 }
             }
             RequestResponseEvent::OutboundFailure { peer, error, .. } => {
+                error!("Outbound failure from peer {}: {}", peer, error);
                 FileStorageProtocolEvent::RequestFailed {
                     peer,
                     error: error.to_string(),
                 }
             }
             RequestResponseEvent::InboundFailure { peer, error, .. } => {
+                error!("Inbound failure from peer {}: {}", peer, error);
                 FileStorageProtocolEvent::RequestFailed {
                     peer,
                     error: error.to_string(),
                 }
             }
-            _ => FileStorageProtocolEvent::RequestFailed {
-                peer: libp2p::PeerId::random(),
-                error: "Unknown event".to_string(),
+            _ => {
+                let peer = libp2p::PeerId::random();
+                
+                error!("Unknown event from peer: {}", peer);
+                FileStorageProtocolEvent::RequestFailed {
+                    peer,
+                    error: "Unknown event".to_string(),
+                }
             },
         }
     }
 }
-
 unsafe impl Send for FileStorageProtocol {}
 unsafe impl Sync for FileStorageProtocol {}
 
 impl FileStorageProtocol {
-    pub fn new(db: Pool<Postgres>) -> Self {
+
+    /// Initializes a new instance of the FileStorageProtocol behaviour.
+    pub fn new(db: Pool<Postgres>, jwt_secret: String) -> Self {
         let protocols = vec![(FileProtocol, ProtocolSupport::Full)];
         let mut cfg = RequestResponseConfig::default();
         cfg.set_request_timeout(Duration::from_secs(60));
@@ -277,80 +363,77 @@ impl FileStorageProtocol {
         Self {
             request_response: RequestResponse::new(FileCodec, protocols, cfg),
             db,
+            jwt_secret,
         }
     }
 
-    async fn handle_request_ref(&self, request: FileRequest) -> FileResponse {
-        match request {
-            FileRequest::Upload(upload_req) => {
-                match handlers::handle_upload(&self.db, upload_req).await {
-                    Ok(file_id) => FileResponse::Upload(UploadResponse { file_id }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::Download(download_req) => {
-                match handlers::handle_download(&self.db, download_req).await {
-                    Ok((data, name)) => FileResponse::Download(DownloadResponse {
-                        file_data: data,
-                        file_name: name,
-                    }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::ListNodes => {
-                match handlers::handle_list_nodes(&self.db).await {
-                    Ok(nodes) => FileResponse::ListNodes(ListNodesResponse { nodes }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::Register(register_req) => {
-                match handlers::handle_register(&self.db, register_req).await {
-                    Ok((user_id, username)) => FileResponse::Register(RegisterResponse { user_id, username }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::DeleteFile(delete_req) => {
-                match handlers::handle_delete_file(&self.db, delete_req).await {
-                    Ok(message) => FileResponse::DeleteFile(DeleteFileResponse {
-                        success: true,
-                        message
-                    }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::BatchUpload(req) => {
-                match handlers::handle_batch_upload(&self.db, req.owner_id, req.file_paths, req.force).await {
-                    Ok(file_ids) => FileResponse::BatchUpload(BatchUploadResponse { file_ids }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::BatchDelete(req) => {
-                match handlers::handle_batch_delete(&self.db, req.user_id, req.file_names).await {
-                    Ok(results) => FileResponse::BatchDelete(BatchDeleteResponse { results }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::ListFiles(req) => {
-                match handlers::handle_list_files(&self.db, req.owner_id).await {
-                    Ok(files) => FileResponse::ListFiles(ListFilesResponse { files }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
-            FileRequest::RenameFile(req) => {
-                match handlers::handle_rename_file(&self.db, req.user_id, &req.old_name, &req.new_name).await {
-                    Ok((success, message)) => FileResponse::RenameFile(RenameFileResponse { success, message }),
-                    Err(e) => FileResponse::Error(e.to_string()),
-                }
-            }
+    /// Handles an incoming request and generates an appropriate response.
+    async fn handle_request_ref(&self, request: FileRequest, _local: bool) -> FileResponse {
+        if let Err(e) = (|| {
+            check_auth(&request, &self.jwt_secret)
+        })() {
+            return FileResponse::Error(format!("JWT Auth failed: {}", e));
         }
+
+        let result = match request {
+            FileRequest::Upload(req, _) => {
+                handle_upload(&self.db, req).await
+                    .map(|file_id| FileResponse::Upload(UploadResponse { file_id }))
+            }
+            FileRequest::Download(req, _) => {
+                handle_download(&self.db, req).await
+                    .map(|(data,name)| FileResponse::Download(DownloadResponse { file_data: data, file_name: name }))
+            }
+            FileRequest::ListNodes(_) => {
+                handle_list_nodes(&self.db).await
+                    .map(|nodes| FileResponse::ListNodes(ListNodesResponse { nodes }))
+            }
+            FileRequest::Register(req, _) => {
+                handle_register(&self.db, req).await
+                    .map(|(user_id,username)| FileResponse::Register(RegisterResponse { user_id, username }))
+            }
+            FileRequest::DeleteFile(req, _) => {
+                handle_delete_file(&self.db, req).await
+                    .map(|message| FileResponse::DeleteFile(DeleteFileResponse { success: true, message }))
+            }
+            FileRequest::BatchUpload(req, _) => {
+                handle_batch_upload(&self.db, req.owner_id, req.file_paths, req.force).await
+                    .map(|file_ids| FileResponse::BatchUpload(BatchUploadResponse { file_ids }))
+            }
+            FileRequest::BatchDelete(req, _) => {
+                handle_batch_delete(&self.db, req.user_id, req.file_names).await
+                    .map(|results| FileResponse::BatchDelete(BatchDeleteResponse { results }))
+            }
+            FileRequest::ListFiles(req, _) => {
+                handle_list_files(&self.db, req.owner_id).await
+                    .map(|files| FileResponse::ListFiles(ListFilesResponse { files }))
+            }
+            FileRequest::RenameFile(req, _) => {
+                handle_rename_file(&self.db, req.user_id, &req.old_name, &req.new_name).await
+                    .map(|(success,message)| FileResponse::RenameFile(RenameFileResponse { success, message }))
+            }
+            FileRequest::RegisterNode(node_address, _) => {
+                handle_register_node(&self.db, node_address).await
+                    .map(|node_id| FileResponse::RegisterNode(RegisterNodeResponse { node_id }))
+            }
+            FileRequest::DownloadChunk(_req, _) => {
+                Err(anyhow!("DownloadChunk not implemented"))
+            }
+            FileRequest::NodeHeartbeat(node_id, _) => {
+                handle_node_heartbeat(&self.db, node_id).await
+                    .map(|_| FileResponse::NodeHeartbeatOk)
+            }
+        };
+
+        // Return the response or an error if handling failed
+        result.unwrap_or_else(|e| FileResponse::Error(format!("Error: {}", e)))
     }
 
+
+    /// Public method to handle local requests synchronously.
     pub async fn handle_local_request(&self, req: FileRequest) -> FileResponse {
-        self.handle_request_ref(req).await
+        self.handle_request_ref(req, true).await
     }
 
-    pub fn send_upload_request(&mut self, peer: &libp2p::PeerId, req: UploadRequest) {
-        let request = FileRequest::Upload(req);
-        self.request_response.send_request(peer, request);
-    }
+    
 }

@@ -32,13 +32,13 @@ impl Cache {
         }
     }
 
-    pub async fn set_file_list(&self, user_id: Uuid, files: &Vec<FileMeta>) -> Result<()> {
-        let mut conn = self.get_conn().await?;
-        let key = format!("user:{}:files", user_id);
-        let json = serde_json::to_string(files)?;
-        let _: () = conn.set_ex(key, json, 60).await?;
-        Ok(())
-    }
+    // pub async fn set_file_list(&self, user_id: Uuid, files: &Vec<FileMeta>) -> Result<()> {
+    //     let mut conn = self.get_conn().await?;
+    //     let key = format!("user:{}:files", user_id);
+    //     let json = serde_json::to_string(files)?;
+    //     let _: () = conn.set_ex(key, json, 60).await?;
+    //     Ok(())
+    // }
 
     pub async fn invalidate_file_list(&self, user_id: Uuid) -> Result<()> {
         let mut conn = self.get_conn().await?;
