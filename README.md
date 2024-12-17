@@ -26,11 +26,11 @@ Furthermore, within the Rust ecosystem, there is a notable gap in lightweight di
 ## Prerequisites
 
 ### Core Requirements
-- Rust (latest stable version)
+- Rust 
 - Redis
 - Docker
 - AWS RDS for PostgreSQL
-- libp2
+- libp2p
 - SQLx
 
 ### Key Dependencies
@@ -274,8 +274,6 @@ This project provided valuable insights into distributed systems development usi
 ### Future Enhancements
 1. AWS EC2 deployment integration (planned)
 2. gRPC implementation for improved communication (planned)
-3. Enhanced data redundancy mechanisms
-4. Web interface development
 
 ### Educational Value
 This project serves as a practical example of:
