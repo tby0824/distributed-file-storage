@@ -4,11 +4,37 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sqlx = { version = "0.8.2", features = ["postgres", "runtime-tokio-native-tls"] }
-tokio = { version = "1", features = ["full"] }
-bcrypt = "0.15.1"
-serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.41.0", features = ["full"] }
+sqlx = { version = "0.8.2", features = ["postgres", "runtime-tokio-native-tls", "macros", "uuid", "chrono"] }
+libp2p = { version ="0.42.0", features = ["mdns","tcp-tokio", "noise", "mplex"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+dotenv = "0.15.0"
+anyhow = "1.0.94"
+
+async-trait = "0.1.83"
+bincode = "1.3.1"
+rand = "0.8.5"
+argon2 = { version = "0.5", features = ["password-hash"] }
+clap = { version = "4.3.0", features = ["derive"] }
+thiserror = "2.0.7"
+serde_json = "1.0.133"
+rustyline = "15.0.0"
+redis = { version = "0.27.6", features = ["tokio-comp"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16.0"
+bytes = "1"
 jsonwebtoken = "9.3.0"
-clap = "4.0"
-dotenv = "0.15"
-redis = { version = "0.27.5", features = ["tokio-comp"] }
+slog-term = "2.8"
+log = "0.4"
+sha2 = "0.10"
+lazy_static = "1.5.0"
+env_logger = "0.10.0"
+
+[features]
+default = []
+

@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:6
+    networks:
+      - dfs-network
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  node1:
+    build: .
+    env_file:
+      - .env
+    environment:
+      PROMETHEUS_PORT: "9898"
+      GRPC_ADDR: "0.0.0.0:50051"
+      LIBP2P_LISTEN_ADDRESS: "/ip4/0.0.0.0/tcp/9000"
+      NODE_ADDRESS: "/ip4/127.0.0.1/tcp/9000"
+    ports:
+      - "9000:9000"
+      - "9898:9898"
+      - "50051:50051"
+    volumes:
+      - node1-data:/usr/local/bin/chunks
+    networks:
+      - dfs-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  node2:
+    build: .
+    env_file:
+      - .env
+    environment:
+      PROMETHEUS_PORT: "9899"
+      GRPC_ADDR: "0.0.0.0:50052"
+      LIBP2P_LISTEN_ADDRESS: "/ip4/0.0.0.0/tcp/9001"
+      NODE_ADDRESS: "/ip4/127.0.0.1/tcp/9001"
+    ports:
+      - "9001:9001"
+      - "9899:9899"
+      - "50052:50052"
+    volumes:
+      - node2-data:/usr/local/bin/chunks
+    networks:
+      - dfs-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  node3:
+    build: .
+    env_file:
+      - .env
+    environment:
+      PROMETHEUS_PORT: "9900"
+      GRPC_ADDR: "0.0.0.0:50053"
+      LIBP2P_LISTEN_ADDRESS: "/ip4/0.0.0.0/tcp/9002"
+      NODE_ADDRESS: "/ip4/127.0.0.1/tcp/9002"
+    ports:
+      - "9002:9002"
+      - "9900:9900"
+      - "50053:50053"
+    volumes:
+      - node3-data:/usr/local/bin/chunks
+    networks:
+      - dfs-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  dfs-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  node1-data:
+  node2-data:
+  node3-data:
