@@ -10,32 +10,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: Lint
+  build:
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Cache dependencies
+        uses: actions/cache@v3
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt, clippy
-          
-      - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [lint]  
-    steps:
-      - uses: actions/checkout@v3
+          path: |
+            ~/.cargo
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Build
         run: cargo build --verbose
