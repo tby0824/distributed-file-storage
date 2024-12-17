@@ -2,7 +2,7 @@
 
 ## Team Members
 - Ziyin Zhang (1010784849) - ziyin.zhang@mail.utoronto.ca
-- Ziming Liu (1006972171) - ziming.liu@mail.utoronto.ca
+- Ziming Liu (1006972171) - zimi.liu@mail.utoronto.ca
 - Boyuan Tan (1011579258) - boyuan.tan@mail.utoronto.ca
 
 ## Motivation
@@ -126,8 +126,78 @@ Our system utilizes Docker for consistent deployment across environments:
 
 ## User's Guide
 
+### Reproducibility Guide
+
+#### Environment Setup
+
+1. Install Rust:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+2. Install Redis:
+```bash
+# Ubuntu
+sudo apt-get update
+sudo apt-get install redis-server
+
+# macOS
+brew install redis
+```
+
+3. Start Redis:
+```bash
+sudo service redis-server start  # Ubuntu
+brew services start redis        # macOS
+```
+
+4. Set Environment Variables:
+```bash
+export DATABASE_URL=postgres://postgres:123456tby@distributed-file-storage.chymoymoc9or.us-east-2.rds.amazonaws.com:5432/dfs_db
+export JWT_SECRET=supersecretjwtkey
+```
+
+#### Building and Running
+
+1. Clone and Build:
+```bash
+git clone git@github.com:tby0824/distributed-file-storage.git
+cd distributed-file-storage
+cargo build --release
+```
+
+2. Run Nodes (each in a separate terminal):
+# First node (port 9000):
+```bash
+NODE_ADDRESS="/ip4/127.0.0.1/tcp/9000" cargo run --release
+```
+# Second node (port 9001):
+```bash
+NODE_ADDRESS="/ip4/127.0.0.1/tcp/9001" cargo run --release
+```
+# Third node (port 9002):
+```bash
+NODE_ADDRESS="/ip4/127.0.0.1/tcp/9002" cargo run --release
+```
+
+3. Alternative: Docker Deployment, if you prefer using Docker:
+```bash
+docker-compose up --build -d
+
+# Verify services are running
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+```
 ### Basic Commands
 
+#### Node Management
+```bash
+# View active nodes
+list-nodes
+```
 #### User Management
 ```bash
 # Register new user
@@ -162,64 +232,6 @@ batch-upload <file1> <file2> ... [--force]
 
 # Rename file
 rename-file <old_name> <new_name>
-```
-
-#### Node Management
-```bash
-# View active nodes
-list-nodes
-```
-
-## Reproducibility Guide
-
-### Environment Setup
-
-1. Install Rust:
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-```
-
-2. Install Redis:
-```bash
-# Ubuntu
-sudo apt-get update
-sudo apt-get install redis-server
-
-# macOS
-brew install redis
-```
-
-3. Start Redis:
-```bash
-sudo service redis-server start  # Ubuntu
-brew services start redis        # macOS
-```
-
-4. Set Environment Variables:
-```bash
-export DATABASE_URL=postgres://postgres:123456tby@distributed-file-storage.chymoymoc9or.us-east-2.rds.amazonaws.com:5432/dfs_db
-export JWT_SECRET=your_secret_key
-export NODE_ADDRESS=/ip4/127.0.0.1/tcp/9001
-```
-
-### Building and Running
-
-1. Clone and Build:
-```bash
-git clone https://github.com/yourusername/distributed-file-storage
-cd distributed-file-storage
-cargo build --release
-```
-
-2. Run Node:
-```bash
-cargo run --release
-```
-
-3. Docker Deployment:
-```bash
-docker-compose up --build -d
 ```
 
 ## Contributions
