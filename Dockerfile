@@ -26,6 +26,11 @@ RUN cargo build --release
 # Runtime Stage
 FROM debian:bookworm-slim
 
+ARG PROMETHEUS_PORT
+ARG GRPC_ADDR
+ARG LIBP2P_LISTEN_ADDRESS
+ARG NODE_ADDRESS
+
 RUN apt-get update && \
     apt-get install -y \
         libpq5 \
@@ -46,5 +51,9 @@ USER appuser
 EXPOSE 9000 9898 50051 9001 9899 50052 9002 9900 50053
 
 ENV RUST_LOG=info
+ENV PROMETHEUS_PORT=${PROMETHEUS_PORT}
+ENV GRPC_ADDR=${GRPC_ADDR}
+ENV LIBP2P_LISTEN_ADDRESS=${LIBP2P_LISTEN_ADDRESS}
+ENV NODE_ADDRESS=${NODE_ADDRESS}
 
 CMD ["./distributed-file-storage"]
