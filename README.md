@@ -1,7 +1,7 @@
 # Distributed File Storage System
 
 ## Team Members
-- Ziyin Zhang (1010784849) - ziyin.zhang@mail.utoronto.ca
+- Ziyin Zhang (1010784849) - zyin.zhang@mail.utoronto.ca
 - Ziming Liu (1006972171) - zimi.liu@mail.utoronto.ca
 - Boyuan Tan (1011579258) - boyuan.tan@mail.utoronto.ca
 
