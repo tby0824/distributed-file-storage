@@ -285,7 +285,7 @@ This project serves as a practical example of:
 The experience demonstrated that Rust is an excellent choice for distributed systems development, offering both performance and safety guarantees. While we achieved our core objectives, the project highlighted areas for future enhancement, particularly in deployment automation and inter-service communication.
 
 ## Three Minutes Demo Video
-🎥 [Watch the Full System Demo (Google Drive)](https://drive.google.com/file/d/1w4-tr3y54s7-AP6uS4UCqzSWqc_pnLLa/view?usp=sharing)
+🎥 [Watch the Full System Demo (Google Drive)](https://drive.google.com/file/d/1c0MuxlSTqsdwXc62B1M7lYnVTy5yEzqW/view)
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
